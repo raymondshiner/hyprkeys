@@ -107,7 +107,7 @@ class HyprKeys(Gtk.Window):
             self.by_key.setdefault(b['key'], []).append(b)
         self.edits = {}          # line_no -> new_label
         self.undo_stack = []     # list of (line_no, prev_value or None)
-        self.active_chip = 'All'
+        self.active_chip = 'Super'
         self.search_text = ''
         self.selected_bind = None
         self.key_widgets = {}    # norm_key -> [ {button, cap, sub} ]
@@ -191,7 +191,7 @@ class HyprKeys(Gtk.Window):
         for name in CHIPS:
             btn = Gtk.Button(label=name)
             btn.get_style_context().add_class('chip')
-            if name == 'All':
+            if name == 'Super':
                 btn.get_style_context().add_class('active')
             btn.connect('clicked', self._on_chip, name)
             self.chip_buttons[name] = btn
@@ -278,14 +278,16 @@ class HyprKeys(Gtk.Window):
         cap_lbl.get_style_context().add_class('key-cap')
         sub_lbl = Gtk.Label(label='')
         sub_lbl.get_style_context().add_class('key-sub')
-        sub_lbl.set_max_width_chars(10)
-        sub_lbl.set_ellipsize(Pango.EllipsizeMode.END)
+        sub_lbl.set_line_wrap(True)
+        sub_lbl.set_line_wrap_mode(Pango.WrapMode.WORD_CHAR)
+        sub_lbl.set_max_width_chars(8)
+        sub_lbl.set_justify(Gtk.Justification.CENTER)
         vb.pack_start(cap_lbl, False, False, 0)
         vb.pack_start(sub_lbl, False, False, 0)
         btn.add(vb)
         btn.connect('clicked', self._on_key_click, norm)
         self.key_widgets.setdefault(norm, []).append({
-            'button': btn, 'cap': cap_lbl, 'sub': sub_lbl,
+            'button': btn, 'cap': cap_lbl, 'sub': sub_lbl, 'cap_orig': cap,
         })
         return btn
 
@@ -301,7 +303,9 @@ class HyprKeys(Gtk.Window):
                     ctx.remove_class(cls)
                 if not binds:
                     w['sub'].set_text('')
+                    w['cap'].set_text('')
                     continue
+                w['cap'].set_text(w['cap_orig'])
                 ctx.add_class('bound')
                 if not visible:
                     ctx.add_class('dimmed')
@@ -311,10 +315,7 @@ class HyprKeys(Gtk.Window):
                 if any(b['line_no'] in self.edits for b in binds):
                     ctx.add_class('unsaved')
                 if primary is not None:
-                    txt = self._effective_label(primary)
-                    if len(binds) > 1:
-                        txt = f'{txt} (+{len(binds)-1})'
-                    w['sub'].set_text(txt[:14])
+                    w['sub'].set_text(self._effective_label(primary))
         self._refresh_media()
         self._refresh_save_btn()
 
@@ -324,7 +325,7 @@ class HyprKeys(Gtk.Window):
             chip = chip_for_bind(b)
             if chip not in ('Media', 'Mouse'):
                 continue
-            if self.active_chip != 'All' and self.active_chip != chip:
+            if self.active_chip != chip:
                 continue
             if self.search_text:
                 hay = (self._effective_label(b).lower() + ' ' + b['key'].lower())
@@ -345,7 +346,7 @@ class HyprKeys(Gtk.Window):
         out = []
         for b in self.by_key.get(norm, []):
             chip = chip_for_bind(b)
-            if self.active_chip != 'All' and chip != self.active_chip:
+            if chip != self.active_chip:
                 continue
             if self.search_text:
                 hay = (self._effective_label(b).lower() + ' ' + b['key'].lower()
@@ -535,8 +536,10 @@ class HyprKeys(Gtk.Window):
         if ctrl and kv in (Gdk.KEY_z, Gdk.KEY_Z):
             self._undo()
             return True
-        if ctrl and Gdk.KEY_1 <= kv <= Gdk.KEY_6:
-            self._on_chip(None, CHIPS[kv - Gdk.KEY_1])
+        if ctrl and Gdk.KEY_1 <= kv <= Gdk.KEY_5:
+            idx = kv - Gdk.KEY_1
+            if idx < len(CHIPS):
+                self._on_chip(None, CHIPS[idx])
             return True
         if kv == Gdk.KEY_slash and not self.search_entry.is_focus():
             self.search_entry.grab_focus()

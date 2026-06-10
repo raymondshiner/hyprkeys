@@ -30,7 +30,7 @@ RIGHT_THUMB = [
     ('Meh', 'meh', 1, 0),
 ]
 
-CHIPS = ['All', 'Super', 'Super+Shift', 'Super+Ctrl', 'Media', 'Mouse']
+CHIPS = ['Super', 'Super+Shift', 'Super+Ctrl', 'Media', 'Mouse']
 
 # Andromeda
 BG = '#1C1E26'

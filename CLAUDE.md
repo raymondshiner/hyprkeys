@@ -68,9 +68,14 @@ No automated tests. Smoke test:
 
 ## What lives where
 
-- Project source: `~/src/hyprkeys/`
-- Deployed script: `~/.local/bin/hyprkeys.py` (symlink to `montressor/local-bin/`)
-- Config touched: `~/.config/hypr/hyprland.conf` (symlinked from `montressor/hypr/`)
+- Project source + git remote: `~/src/hyprkeys/` → `github.com/raymondshiner/hyprkeys`
+- Deployed script: `~/.local/bin/hyprkeys.py` (symlink to `~/src/hyprkeys/hyprkeys.py`)
+- Supporting modules: `~/.local/bin/hyprkeys_{parser,layout}.py` (symlinks to `~/src/hyprkeys/`)
+- Config touched: `~/.config/hypr/hyprland.conf` (symlinked from `~/montressor/hypr/`)
+
+Source no longer lives in `~/montressor/`. After edits in `~/src/hyprkeys/`,
+commit + push directly with `git -C ~/src/hyprkeys ...` — `dots` does not
+manage this repo.
 
 Don't add comments unless the WHY is non-obvious. Don't add error handling for
 scenarios that can't happen (e.g. the file always exists; the user always has
