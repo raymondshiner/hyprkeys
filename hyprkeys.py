@@ -20,6 +20,7 @@ from hyprkeys_layout import (  # noqa: E402
     LEFT_KEYS, LEFT_THUMB, RIGHT_KEYS, RIGHT_THUMB, CHIPS,
     BG, BG_ELEV, MUTED, TEXT, CYAN, YELLOW, RED, PURPLE,
 )
+from moonkeys_view import QmkView  # noqa: E402
 
 PID_FILE = '/tmp/hyprkeys.pid'
 
@@ -95,6 +96,29 @@ window {{ background: transparent; }}
 .toast {{ color: {CYAN}; font-family: "JetBrainsMono Nerd Font"; font-size: 11px; }}
 .half-label {{ color: {MUTED}; font-family: "JetBrainsMono Nerd Font"; font-size: 10px; }}
 .media-row {{ color: {MUTED}; font-family: "JetBrainsMono Nerd Font"; font-size: 11px; }}
+.mode-chip {{
+    background-color: {BG_ELEV}; color: {MUTED};
+    border-radius: 999px; padding: 4px 14px; border: none;
+    font-family: "JetBrainsMono Nerd Font"; font-size: 11px; font-weight: bold;
+    box-shadow: none; text-shadow: none;
+}}
+.mode-chip:hover {{ color: {TEXT}; }}
+.mode-chip.active {{ background-color: {PURPLE}; color: {BG}; }}
+.qkey {{
+    background-color: {BG_ELEV}; color: {TEXT};
+    border-radius: 6px; border: 1px solid {MUTED}; padding: 3px;
+    font-family: "JetBrainsMono Nerd Font"; font-size: 11px;
+    box-shadow: none; text-shadow: none;
+}}
+.qkey.transparent {{ color: {MUTED}; border-color: transparent; background-color: {BG}; }}
+.qkey.selected {{ border: 2px solid {PURPLE}; }}
+.qkey.unsaved {{ border-color: {YELLOW}; }}
+.qcap {{ font-family: "JetBrainsMono Nerd Font"; font-size: 11px; }}
+.drawer {{
+    background-color: {BG_ELEV}; border-radius: 10px; padding: 14px;
+    margin-left: 4px;
+}}
+.swatch-btn {{ border-radius: 4px; padding: 0; }}
 """
 
 
@@ -112,6 +136,8 @@ class HyprKeys(Gtk.Window):
         self.selected_bind = None
         self.key_widgets = {}    # norm_key -> [ {button, cap, sub} ]
         self.chip_buttons = {}
+        self.mode = 'hyprland'
+        self.qmk_edit_count = 0
 
         self._setup_window()
         self._build_ui()
@@ -159,10 +185,24 @@ class HyprKeys(Gtk.Window):
         title.get_style_context().add_class('app-title')
         title.set_xalign(0)
         header.pack_start(title, False, False, 0)
-        sub = Gtk.Label(label='hotkey atlas + label editor')
-        sub.get_style_context().add_class('muted')
-        sub.set_xalign(0)
-        header.pack_start(sub, False, False, 0)
+        self.sub_lbl = Gtk.Label(label='hotkey atlas + label editor')
+        self.sub_lbl.get_style_context().add_class('muted')
+        self.sub_lbl.set_xalign(0)
+        header.pack_start(self.sub_lbl, False, False, 0)
+
+        self.mode_chips = {}
+        mode_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        mode_row.set_margin_start(12)
+        for label, mode in (('Hyprland', 'hyprland'), ('QMK', 'qmk')):
+            btn = Gtk.Button(label=label)
+            btn.get_style_context().add_class('mode-chip')
+            if mode == 'hyprland':
+                btn.get_style_context().add_class('active')
+            btn.connect('clicked', lambda _b, m=mode: self._set_mode(m))
+            self.mode_chips[mode] = btn
+            mode_row.pack_start(btn, False, False, 0)
+        header.pack_start(mode_row, False, False, 0)
+
         header.pack_start(Gtk.Box(), True, True, 0)
         self.toast_lbl = Gtk.Label(label='')
         self.toast_lbl.get_style_context().add_class('toast')
@@ -170,7 +210,7 @@ class HyprKeys(Gtk.Window):
         self.save_btn = Gtk.Button(label='Save 0 changes')
         self.save_btn.get_style_context().add_class('save-btn')
         self.save_btn.set_sensitive(False)
-        self.save_btn.connect('clicked', lambda _b: self._save())
+        self.save_btn.connect('clicked', lambda _b: self._do_save())
         header.pack_start(self.save_btn, False, False, 0)
         close = Gtk.Button(label='✕')
         close.get_style_context().add_class('close-btn')
@@ -178,13 +218,26 @@ class HyprKeys(Gtk.Window):
         header.pack_start(close, False, False, 0)
         inner.pack_start(header, False, False, 0)
 
+        # Body stack: hyprland editor | qmk editor
+        self.stack = Gtk.Stack()
+        self.stack.set_transition_type(Gtk.StackTransitionType.CROSSFADE)
+        self.stack.set_transition_duration(120)
+        inner.pack_start(self.stack, False, False, 0)
+
+        hypr_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        self.stack.add_named(hypr_box, 'hyprland')
+
+        self.qmk = QmkView(self._toast)
+        self.qmk.set_count_callback(self._on_qmk_count)
+        self.stack.add_named(self.qmk, 'qmk')
+
         # Search
         self.search_entry = Gtk.Entry()
         self.search_entry.get_style_context().add_class('search-entry')
         self.search_entry.set_placeholder_text('Search by label or key…')
         self.search_entry.connect('changed', self._on_search)
         self.search_entry.connect('activate', self._on_search_activate)
-        inner.pack_start(self.search_entry, False, False, 0)
+        hypr_box.pack_start(self.search_entry, False, False, 0)
 
         # Chips
         chip_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -196,14 +249,14 @@ class HyprKeys(Gtk.Window):
             btn.connect('clicked', self._on_chip, name)
             self.chip_buttons[name] = btn
             chip_row.pack_start(btn, False, False, 0)
-        inner.pack_start(chip_row, False, False, 0)
+        hypr_box.pack_start(chip_row, False, False, 0)
 
         # Keyboard
         kb_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=24)
         kb_row.set_halign(Gtk.Align.CENTER)
         kb_row.pack_start(self._build_half('LEFT', LEFT_KEYS, LEFT_THUMB), False, False, 0)
         kb_row.pack_start(self._build_half('RIGHT', RIGHT_KEYS, RIGHT_THUMB), False, False, 0)
-        inner.pack_start(kb_row, False, False, 0)
+        hypr_box.pack_start(kb_row, False, False, 0)
 
         # Media / mouse strip
         self.media_label = Gtk.Label(label='')
@@ -211,15 +264,15 @@ class HyprKeys(Gtk.Window):
         self.media_label.set_xalign(0.5)
         self.media_label.set_line_wrap(True)
         self.media_label.set_max_width_chars(120)
-        inner.pack_start(self.media_label, False, False, 0)
+        hypr_box.pack_start(self.media_label, False, False, 0)
 
-        inner.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
+        hypr_box.pack_start(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL), False, False, 0)
 
         # Detail
         self.detail_top = Gtk.Label(label='Click a key to edit its label')
         self.detail_top.get_style_context().add_class('detail-key')
         self.detail_top.set_xalign(0)
-        inner.pack_start(self.detail_top, False, False, 0)
+        hypr_box.pack_start(self.detail_top, False, False, 0)
 
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         lbl_lbl = Gtk.Label(label='Label:')
@@ -236,17 +289,39 @@ class HyprKeys(Gtk.Window):
         self.reset_btn.set_sensitive(False)
         self.reset_btn.connect('clicked', lambda _b: self._reset_current())
         row.pack_start(self.reset_btn, False, False, 0)
-        inner.pack_start(row, False, False, 0)
+        hypr_box.pack_start(row, False, False, 0)
 
         self.cmd_label = Gtk.Label(label='')
         self.cmd_label.get_style_context().add_class('detail-cmd')
         self.cmd_label.set_xalign(0)
         self.cmd_label.set_max_width_chars(140)
         self.cmd_label.set_ellipsize(Pango.EllipsizeMode.END)
-        inner.pack_start(self.cmd_label, False, False, 0)
+        hypr_box.pack_start(self.cmd_label, False, False, 0)
 
         self.variant_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        inner.pack_start(self.variant_row, False, False, 0)
+        hypr_box.pack_start(self.variant_row, False, False, 0)
+
+    # ---- mode switching
+    def _set_mode(self, mode):
+        if mode == self.mode:
+            return
+        self.mode = mode
+        self.stack.set_visible_child_name(mode)
+        for m, btn in self.mode_chips.items():
+            ctx = btn.get_style_context()
+            (ctx.add_class if m == mode else ctx.remove_class)('active')
+        if mode == 'qmk':
+            self.sub_lbl.set_text('moonlander firmware — keycodes + RGB')
+            self._refresh_save_btn()
+        else:
+            self.sub_lbl.set_text('hotkey atlas + label editor')
+            self.search_entry.grab_focus()
+            self._refresh_save_btn()
+
+    def _on_qmk_count(self, n):
+        self.qmk_edit_count = n
+        if self.mode == 'qmk':
+            self._refresh_save_btn()
 
     def _build_half(self, name, keys, thumb):
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
@@ -335,7 +410,7 @@ class HyprKeys(Gtk.Window):
         self.media_label.set_text('  ·  '.join(bits) if bits else '')
 
     def _refresh_save_btn(self):
-        n = len(self.edits)
+        n = self.qmk_edit_count if self.mode == 'qmk' else len(self.edits)
         self.save_btn.set_label(f'Save {n} change{"s" if n != 1 else ""}')
         self.save_btn.set_sensitive(n > 0)
 
@@ -464,6 +539,13 @@ class HyprKeys(Gtk.Window):
             self._refresh_keys()
 
     # ---- save
+    def _do_save(self):
+        if self.mode == 'qmk':
+            self.qmk.save(self)
+            self._refresh_save_btn()
+        else:
+            self._save()
+
     def _save(self):
         if not self.edits:
             return
@@ -503,10 +585,10 @@ class HyprKeys(Gtk.Window):
 
     # ---- close
     def _request_close(self):
-        if not self.edits:
+        n = self.qmk_edit_count if self.mode == 'qmk' else len(self.edits)
+        if n == 0:
             self.destroy()
             return
-        n = len(self.edits)
         dlg = Gtk.MessageDialog(
             transient_for=self, flags=0,
             message_type=Gtk.MessageType.QUESTION,
@@ -519,7 +601,7 @@ class HyprKeys(Gtk.Window):
         resp = dlg.run()
         dlg.destroy()
         if resp == Gtk.ResponseType.YES:
-            self._save()
+            self._do_save()
             self.destroy()
         elif resp == Gtk.ResponseType.NO:
             self.destroy()
@@ -530,9 +612,16 @@ class HyprKeys(Gtk.Window):
         if kv == Gdk.KEY_Escape:
             self._request_close()
             return True
-        if ctrl and kv in (Gdk.KEY_s, Gdk.KEY_S):
-            self._save()
+        if ctrl and kv in (Gdk.KEY_m, Gdk.KEY_M):
+            self._set_mode('hyprland' if self.mode == 'qmk' else 'qmk')
             return True
+        if ctrl and kv in (Gdk.KEY_s, Gdk.KEY_S):
+            self._do_save()
+            return True
+        if self.mode == 'qmk':
+            if ctrl and Gdk.KEY_1 <= kv <= Gdk.KEY_3:
+                self.qmk._on_layer(None, kv - Gdk.KEY_1)
+            return True if (ctrl and Gdk.KEY_1 <= kv <= Gdk.KEY_3) else False
         if ctrl and kv in (Gdk.KEY_z, Gdk.KEY_Z):
             self._undo()
             return True

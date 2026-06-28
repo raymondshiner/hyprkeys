@@ -15,6 +15,9 @@ git clone https://github.com/raymondshiner/hyprkeys.git ~/src/hyprkeys
 ln -s ~/src/hyprkeys/hyprkeys.py        ~/.local/bin/hyprkeys.py
 ln -s ~/src/hyprkeys/hyprkeys_parser.py ~/.local/bin/hyprkeys_parser.py
 ln -s ~/src/hyprkeys/hyprkeys_layout.py ~/.local/bin/hyprkeys_layout.py
+ln -s ~/src/hyprkeys/moonkeys_qmk.py    ~/.local/bin/moonkeys_qmk.py
+ln -s ~/src/hyprkeys/moonkeys_view.py   ~/.local/bin/moonkeys_view.py
+ln -s ~/src/hyprkeys/moonkeys_flash.py  ~/.local/bin/moonkeys_flash.py
 ```
 
 Dependencies (Arch):
@@ -40,6 +43,17 @@ bind = SUPER, slash, exec, ~/.local/bin/hyprkeys.py
 - `Ctrl+Z` — undo last label change
 
 Labels are stored as `# @label: <text>` inline comments on each `bind = ...` line. The parser also synthesizes labels from the dispatcher when no comment is present, so the atlas is useful immediately on a fresh config.
+
+## QMK mode (moonkeys)
+
+The header has a `[ Hyprland ] [ QMK ]` toggle (`Ctrl+M`). QMK mode is a local Oryx for the Moonlander firmware — it reads `~/montressor/moonlander/keymap/keymap.c` and renders the live keymap on the same grid, one layer at a time (`Default` / `Other` / `Apps`, switch with the chips or `Ctrl+1/2/3`).
+
+- Every key cap shows its keycode (or the human label from the comment-header table), with its current RGB as a swatch underneath.
+- Click a key → a side drawer opens with the keycode field, an HSV color picker (three sliders + Andromeda palette swatches + live preview), and the key's Hyprland action.
+- Per-key RGB is parsed from and written back to the `ledmap[layer][led][3]` HSV array; the LAYOUT→LED index map is derived from `keyboard.json`.
+- `Ctrl+S` writes `keymap.c` atomically (only the changed keycode tokens and HSV triplets are spliced), commits the `~/montressor/moonlander` repo, then opens the **flash gate**: *Compile + Flash* / *Compile only* / *Not yet*. Build and flash run in a visible terminal — flashing waits for you to push the reset pinhole on the right half.
+
+Modules: `moonkeys_qmk.py` (parser/serializer), `moonkeys_view.py` (the GTK editor), `moonkeys_flash.py` (compile + DFU flash gate).
 
 ## Layout
 
