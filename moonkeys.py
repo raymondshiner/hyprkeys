@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""hyprkeys — Hotkey cheatsheet + label editor for Hyprland. See SPEC.md."""
+"""moonkeys — Hyprland hotkey atlas + Moonlander QMK firmware editor.
+
+Two modes share one Moonlander-shaped GTK popup:
+  - Hyprland: cheatsheet + inline label editor for hyprland.conf
+  - QMK: live keymap.c view, per-key keycode + RGB editing, compile + flash
+See SPEC.md.
+"""
 import gi
 gi.require_version('Gtk', '3.0')
 gi.require_version('Gdk', '3.0')
@@ -22,7 +28,7 @@ from hyprkeys_layout import (  # noqa: E402
 )
 from moonkeys_view import QmkView  # noqa: E402
 
-PID_FILE = '/tmp/hyprkeys.pid'
+PID_FILE = '/tmp/moonkeys.pid'
 
 
 CSS = f"""
@@ -122,7 +128,7 @@ window {{ background: transparent; }}
 """
 
 
-class HyprKeys(Gtk.Window):
+class MoonKeys(Gtk.Window):
     def __init__(self):
         super().__init__()
         self.binds, _ = parse_config()
@@ -181,7 +187,7 @@ class HyprKeys(Gtk.Window):
 
         # Header
         header = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        title = Gtk.Label(label='hyprkeys')
+        title = Gtk.Label(label='moonkeys')
         title.get_style_context().add_class('app-title')
         title.set_xalign(0)
         header.pack_start(title, False, False, 0)
@@ -660,7 +666,7 @@ def main():
                 pass
     with open(PID_FILE, 'w') as f:
         f.write(str(os.getpid()))
-    HyprKeys()
+    MoonKeys()
     Gtk.main()
 
 

@@ -1,7 +1,10 @@
 # moonkeys upgrade plan
 
-Owner: smith
-Status: backlog
+Owner: jarvis (built by smith; ownership moved to jarvis on completion — this is
+desktop/firmware tooling, and firmware edits are Jarvis's job)
+Status: DONE — shipped 2026-06-28. All phases (QMK view, swatches, keycode +
+RGB drawer, layer switcher, flash gate) landed; project renamed hyprkeys →
+moonkeys (repo, entry point, GitHub remote, Hyprland bind, symlinks).
 Source: spec'd by jeeves 2026-06-12 in conversation with raymond
 
 ## What this is

@@ -1,7 +1,14 @@
-# hyprkeys — Smith Notes
+# moonkeys — Jarvis Notes
 
-Hand-built GTK popup. Part of the **Montressor** system (the desktop's umbrella
-name). Read `SPEC.md` end-to-end before writing any code.
+**Jarvis' domain.** This is desktop + Moonlander-firmware tooling, not app code —
+route work here to Jarvis, not Smith. (It was built by Smith and renamed from
+`hyprkeys`; ownership moved to Jarvis once the QMK/firmware backend landed, since
+firmware edits are always Jarvis's job per the `moonlander-hotkey` skill.)
+
+Hand-built GTK popup with two modes — Hyprland hotkey atlas + label editor, and a
+local-Oryx QMK editor for the Moonlander `keymap.c`. Part of the **Montressor**
+system (the desktop's umbrella name). Read `SPEC.md` and `MOONKEYS-UPGRADE.md`
+before writing any code.
 
 ## Stack constraints (non-negotiable)
 
@@ -15,7 +22,7 @@ name). Read `SPEC.md` end-to-end before writing any code.
 ## Andromeda
 
 All colors and the font come from `~/CLAUDE.md`. Do not invent new accents.
-hyprkeys's signature accent is purple `#B084EB` — use it for the popup glow
+moonkeys's signature accent is purple `#B084EB` — use it for the popup glow
 and the "selected key" highlight.
 
 ## File writes
@@ -68,14 +75,21 @@ No automated tests. Smoke test:
 
 ## What lives where
 
-- Project source + git remote: `~/src/hyprkeys/` → `github.com/raymondshiner/hyprkeys`
-- Deployed script: `~/.local/bin/hyprkeys.py` (symlink to `~/src/hyprkeys/hyprkeys.py`)
-- Supporting modules: `~/.local/bin/hyprkeys_{parser,layout}.py` (symlinks to `~/src/hyprkeys/`)
-- Config touched: `~/.config/hypr/hyprland.conf` (symlinked from `~/montressor/hypr/`)
+- Project source + git remote: `~/src/moonkeys/` → `github.com/raymondshiner/moonkeys`
+- Deployed script: `~/.local/bin/moonkeys.py` (symlink to `~/src/moonkeys/moonkeys.py`)
+- Supporting modules (`hyprkeys_{parser,layout}.py`, `moonkeys_{qmk,view,flash}.py`)
+  are imported from the script's own resolved directory (`~/src/moonkeys/`) — no
+  separate bin symlinks needed.
+- Hyprland bind: `~/.config/hypr/hyprland.conf` → `Super + /` → `moonkeys.py`
+  (symlinked from `~/montressor/hypr/`)
+- QMK firmware it edits: `~/montressor/moonlander/keymap/keymap.c` (+ `make
+  compile` / `make flash` in `~/montressor/moonlander/`)
 
-Source no longer lives in `~/montressor/`. After edits in `~/src/hyprkeys/`,
-commit + push directly with `git -C ~/src/hyprkeys ...` — `dots` does not
-manage this repo.
+Source lives in `~/src/moonkeys/`, NOT `~/montressor/`. After edits there,
+commit + push directly with `git -C ~/src/moonkeys ...` — `dots` does not
+manage this repo. Note the two *other* repos this tool writes to on save:
+`~/montressor` (hyprland.conf, via `dots`) and `~/montressor/moonlander`
+(keymap.c, via `git -C ~/montressor/moonlander`).
 
 Don't add comments unless the WHY is non-obvious. Don't add error handling for
 scenarios that can't happen (e.g. the file always exists; the user always has
