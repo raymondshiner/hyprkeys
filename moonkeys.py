@@ -149,6 +149,7 @@ class MoonKeys(Gtk.Window):
         self._build_ui()
         self._refresh_keys()
         self.show_all()
+        self.stack.set_visible_child_name(self.mode)
         if self.mode == 'hyprland':
             self.search_entry.grab_focus()
 
@@ -237,7 +238,6 @@ class MoonKeys(Gtk.Window):
         self.qmk = QmkView(self._toast)
         self.qmk.set_count_callback(self._on_qmk_count)
         self.stack.add_named(self.qmk, 'qmk')
-        self.stack.set_visible_child_name('qmk')
 
         # Search
         self.search_entry = Gtk.Entry()
