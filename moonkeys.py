@@ -116,7 +116,7 @@ window {{ background: transparent; }}
     font-family: "JetBrainsMono Nerd Font"; font-size: 11px;
     box-shadow: none; text-shadow: none;
 }}
-.qkey.transparent {{ color: {MUTED}; border-color: transparent; background-color: {BG}; }}
+.qkey.transparent {{ color: {MUTED}; border-color: rgba(103, 118, 145, 0.4); background-color: {BG}; }}
 .qkey.selected {{ border: 2px solid {PURPLE}; }}
 .qkey.unsaved {{ border-color: {YELLOW}; }}
 .qcap {{ font-family: "JetBrainsMono Nerd Font"; font-size: 11px; }}
@@ -142,14 +142,15 @@ class MoonKeys(Gtk.Window):
         self.selected_bind = None
         self.key_widgets = {}    # norm_key -> [ {button, cap, sub} ]
         self.chip_buttons = {}
-        self.mode = 'hyprland'
+        self.mode = 'qmk'
         self.qmk_edit_count = 0
 
         self._setup_window()
         self._build_ui()
         self._refresh_keys()
         self.show_all()
-        self.search_entry.grab_focus()
+        if self.mode == 'hyprland':
+            self.search_entry.grab_focus()
 
     # ---- window setup
     def _setup_window(self):
@@ -191,7 +192,7 @@ class MoonKeys(Gtk.Window):
         title.get_style_context().add_class('app-title')
         title.set_xalign(0)
         header.pack_start(title, False, False, 0)
-        self.sub_lbl = Gtk.Label(label='hotkey atlas + label editor')
+        self.sub_lbl = Gtk.Label(label='moonlander firmware — keycodes + RGB')
         self.sub_lbl.get_style_context().add_class('muted')
         self.sub_lbl.set_xalign(0)
         header.pack_start(self.sub_lbl, False, False, 0)
@@ -202,7 +203,7 @@ class MoonKeys(Gtk.Window):
         for label, mode in (('Hyprland', 'hyprland'), ('QMK', 'qmk')):
             btn = Gtk.Button(label=label)
             btn.get_style_context().add_class('mode-chip')
-            if mode == 'hyprland':
+            if mode == 'qmk':
                 btn.get_style_context().add_class('active')
             btn.connect('clicked', lambda _b, m=mode: self._set_mode(m))
             self.mode_chips[mode] = btn
@@ -236,6 +237,7 @@ class MoonKeys(Gtk.Window):
         self.qmk = QmkView(self._toast)
         self.qmk.set_count_callback(self._on_qmk_count)
         self.stack.add_named(self.qmk, 'qmk')
+        self.stack.set_visible_child_name('qmk')
 
         # Search
         self.search_entry = Gtk.Entry()
