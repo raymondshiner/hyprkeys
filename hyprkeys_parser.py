@@ -2,7 +2,9 @@
 import os
 import re
 
-CONFIG_PATH = os.path.expanduser('~/.config/hypr/hyprland.conf')
+# Resolve the symlink: os.rename onto a symlink path would replace the link
+# itself with the temp file, detaching ~/.config/hypr from ~/montressor.
+CONFIG_PATH = os.path.realpath(os.path.expanduser('~/.config/hypr/hyprland.conf'))
 
 BIND_RE = re.compile(
     r'^(?P<kw>bind[melE]*)\s*=\s*'
