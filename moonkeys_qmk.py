@@ -53,6 +53,27 @@ def _load_led_by_layout():
 LED_BY_LAYOUT = _load_led_by_layout()
 LED_COUNT = len(LED_BY_LAYOUT)
 
+# QMK modifier wrappers -> Hyprland modifier names, and back to *_T() mod-tap macros.
+MOD_WRAP_TO_HYPR = {
+    'LGUI': 'Super', 'RGUI': 'Super', 'LSFT': 'Shift', 'RSFT': 'Shift',
+    'LCTL': 'Ctrl', 'RCTL': 'Ctrl', 'LALT': 'Alt', 'RALT': 'Alt',
+}
+MOD_T_MACRO = {'Super': 'LGUI_T', 'Shift': 'LSFT_T', 'Ctrl': 'LCTL_T', 'Alt': 'LALT_T'}
+MOD_HYPR_TO_WRAP = {'Super': 'LGUI', 'Shift': 'LSFT', 'Ctrl': 'LCTL', 'Alt': 'LALT'}
+MOD_KC = {'Super': 'KC_LEFT_GUI', 'Shift': 'KC_LEFT_SHIFT',
+          'Ctrl': 'KC_LEFT_CTRL', 'Alt': 'KC_LEFT_ALT'}
+
+# LAYOUT position -> KC_ token for the arrow / space / common non-alnum keys,
+# used when decoding a tap chord into a Hyprland (mods, key) pair.
+_KC_TO_HYPR_KEY = {
+    'KC_SPACE': 'space', 'KC_ENTER': 'return', 'KC_ESCAPE': 'escape',
+    'KC_TAB': 'tab', 'KC_DELETE': 'delete', 'KC_BSPC': 'backspace',
+    'KC_LEFT': 'left', 'KC_RIGHT': 'right', 'KC_UP': 'up', 'KC_DOWN': 'down',
+    'KC_MINUS': 'minus', 'KC_EQUAL': 'equal', 'KC_SLASH': 'slash',
+    'KC_COMMA': 'comma', 'KC_DOT': 'period', 'KC_SCLN': 'semicolon',
+    'KC_QUOTE': 'apostrophe', 'KC_GRAVE': 'grave',
+}
+
 
 # ── span-aware C parsing helpers ───────────────────────────────────────────
 
@@ -140,6 +161,61 @@ def _norm_kc(s):
     return re.sub(r'\s+', '', s)
 
 
+def _paren_args(s):
+    """Top-level comma-split of the FIRST (...) group in s. 'F(A(x), B)' -> ['A(x)', 'B']."""
+    i = s.index('(')
+    spans, _ = _split_args(s, i)
+    return [s[a:b].strip() for a, b in spans]
+
+
+def _end_of_statement(text, brace_end):
+    """Given the index just past a closing '}', return the index just past its ';'."""
+    i = brace_end
+    while i < len(text) and text[i] in ' \t\r\n':
+        i += 1
+    if i < len(text) and text[i] == ';':
+        return i + 1
+    return brace_end
+
+
+# ── tap-dance section ──────────────────────────────────────────────────────
+
+def parse_tap_dance(text):
+    """Parse `enum tap_dance_codes` + `tap_dance_actions[]` into a managed model.
+
+    Returns {names, actions, enum_span, arr_span} where actions maps a TD name
+    to its raw ACTION_* initializer text, and the spans cover the full
+    statements (through the trailing ';') for in-place regeneration.
+    """
+    names, enum_span = [], None
+    m = re.search(r'enum\s+tap_dance_codes\s*\{', text)
+    if m:
+        brace = text.index('{', m.end() - 1)
+        spans, end = _split_args(text, brace)
+        for s, e in spans:
+            ts, te = _trim(text, s, e)
+            tok = text[ts:te]
+            if tok:
+                names.append(tok.split('=')[0].strip())
+        enum_span = (m.start(), _end_of_statement(text, end))
+
+    actions, arr_span = {}, None
+    am = re.search(r'tap_dance_action_t\s+tap_dance_actions\s*\[\]\s*=\s*\{', text)
+    if am:
+        brace = text.index('{', am.end() - 1)
+        spans, end = _split_args(text, brace)
+        for s, e in spans:
+            ts, te = _trim(text, s, e)
+            tok = text[ts:te]
+            em = re.match(r'\[(\w+)\]\s*=\s*(.+)', tok, re.S)
+            if em:
+                actions[em.group(1)] = re.sub(r'\s+', ' ', em.group(2)).strip()
+        arr_span = (am.start(), _end_of_statement(text, end))
+
+    return {'names': names, 'actions': actions,
+            'enum_span': enum_span, 'arr_span': arr_span}
+
+
 # ── keymap + ledmap parsing ────────────────────────────────────────────────
 
 def parse_keymap(path=None):
@@ -187,8 +263,16 @@ def parse_keymap(path=None):
             leds.append({'idx': idx, 'hsv': hsv, 'span': (ts, te)})
         ledmap[LAYER_INDEX[name]] = leds
 
+    tapdance = parse_tap_dance(text)
+
+    managed_labels, labels_span = parse_managed_labels(text)
+    for kc, lbl in managed_labels.items():
+        action = header[kc]['action'] if kc in header else ''
+        header[kc] = {'label': lbl, 'action': action}
+
     return {'text': text, 'path': path, 'layers': layers,
-            'ledmap': ledmap, 'header': header}
+            'ledmap': ledmap, 'header': header, 'tapdance': tapdance,
+            'labels': managed_labels, 'labels_span': labels_span}
 
 
 def key_view(model, layer, pos):
@@ -201,6 +285,205 @@ def key_view(model, layer, pos):
     return {'keycode': kc, 'led': led, 'hsv': hsv,
             'label': meta['label'] if meta else None,
             'action': meta['action'] if meta else None}
+
+
+# ── per-key behaviour slots (tap / double-tap / hold) ──────────────────────
+
+# A "slots" dict:
+#   {'tap': keycode_str|None, 'double': keycode_str|None,
+#    'hold': None | ('layer', '_OTHER') | ('mod', 'Super')}
+
+_MOD_T_RE = re.compile(r'(LGUI|RGUI|LSFT|RSFT|LCTL|RCTL|LALT|RALT)_T\((.+)\)')
+
+
+def decode_slots(model, keycode):
+    """Resolve a layout keycode token into tap / double / hold behaviour slots."""
+    kc = _norm_kc(keycode)
+    m = re.fullmatch(r'MO\((_\w+)\)', kc)
+    if m:
+        return {'tap': None, 'double': None, 'hold': ('layer', m.group(1))}
+    m = re.fullmatch(r'LT\((_\w+),(.+)\)', kc)
+    if m:
+        return {'tap': m.group(2), 'double': None, 'hold': ('layer', m.group(1))}
+    m = _MOD_T_RE.fullmatch(kc)
+    if m:
+        return {'tap': m.group(2), 'double': None,
+                'hold': ('mod', MOD_WRAP_TO_HYPR[m.group(1)])}
+    m = re.fullmatch(r'TD\((\w+)\)', kc)
+    if m:
+        return _decode_td(model, m.group(1))
+    if is_transparent(kc):
+        return {'tap': None, 'double': None, 'hold': None}
+    return {'tap': keycode.strip(), 'double': None, 'hold': None}
+
+
+def _decode_td(model, name):
+    act = model['tapdance']['actions'].get(name, '')
+    empty = {'tap': None, 'double': None, 'hold': None}
+    a = _norm_kc(act)
+    m = re.match(r'ACTION_TAP_DANCE_DOUBLE\(', a)
+    if m:
+        args = _paren_args(act)
+        return {'tap': args[0], 'double': args[1] if len(args) > 1 else None,
+                'hold': None}
+    m = re.match(r'ACTION_TAP_DANCE_LAYER_MOVE\(', a)
+    if m:
+        args = _paren_args(act)
+        return {'tap': args[0], 'double': None, 'hold': ('layer', args[1])}
+    # Advanced fns generated by moonkeys carry an /* mk:tap=..;dbl=..;hold=.. */ tag.
+    tag = re.search(r'mk:([^*]+)', act)
+    if tag:
+        return _slots_from_tag(tag.group(1))
+    return empty
+
+
+def _slots_from_tag(s):
+    out = {'tap': None, 'double': None, 'hold': None}
+    for part in s.split(';'):
+        part = part.strip()
+        if part.startswith('tap=') and part[4:]:
+            out['tap'] = part[4:]
+        elif part.startswith('dbl=') and part[4:]:
+            out['double'] = part[4:]
+        elif part.startswith('hold=') and part[5:]:
+            hv = part[5:]
+            out['hold'] = (('layer', hv) if hv.startswith('_')
+                           else ('mod', hv))
+    return out
+
+
+def _tag_for_slots(slots):
+    hold = ''
+    if slots.get('hold'):
+        hold = slots['hold'][1]
+    return 'mk:tap=%s;dbl=%s;hold=%s' % (
+        slots.get('tap') or '', slots.get('double') or '', hold)
+
+
+def slots_equal(a, b):
+    return (a.get('tap') == b.get('tap')
+            and a.get('double') == b.get('double')
+            and a.get('hold') == b.get('hold'))
+
+
+def cap_from_slots(model, slots):
+    """Two-line legend for a key from its slots: tap on top, badges below."""
+    tap = slots.get('tap')
+    top = cap_label(model, tap) if tap else ''
+    if not top and slots.get('hold') and slots['hold'][0] == 'layer':
+        top = 'L:' + slots['hold'][1].lstrip('_')[:3].title()
+    badges = []
+    if slots.get('double'):
+        badges.append('··' + cap_label(model, slots['double']))
+    if tap and slots.get('hold'):
+        hk, hv = slots['hold']
+        badges.append('⤓' + (('L:' + hv.lstrip('_')[:3].title())
+                             if hk == 'layer' else hv[:2]))
+    sub = ' '.join(badges)
+    return top, sub
+
+
+# ── QMK chord <-> Hyprland (mods, key) ─────────────────────────────────────
+
+def _kc_to_hypr_key(kc):
+    kc = _norm_kc(kc)
+    if kc in _KC_TO_HYPR_KEY:
+        return _KC_TO_HYPR_KEY[kc]
+    m = re.fullmatch(r'KC_([A-Z])', kc)
+    if m:
+        return m.group(1)
+    m = re.fullmatch(r'KC_(\d)', kc)
+    if m:
+        return m.group(1)
+    m = re.fullmatch(r'KC_F(\d{1,2})', kc)
+    if m:
+        return 'F' + m.group(1)
+    return None
+
+
+def chord_to_hypr(keycode):
+    """A tap keycode like LGUI(LSFT(KC_P)) -> (('Shift','Super'), 'P'), else None."""
+    if not keycode:
+        return None
+    kc = _norm_kc(keycode)
+    mods = []
+    while True:
+        m = re.fullmatch(r'([LR](?:GUI|SFT|CTL|ALT))\((.+)\)', kc)
+        if not m:
+            break
+        mods.append(MOD_WRAP_TO_HYPR[m.group(1)])
+        kc = m.group(2)
+    key = _kc_to_hypr_key(kc)
+    if key is None:
+        return None
+    return (tuple(sorted(set(mods))), key)
+
+
+_HYPR_KEY_TO_KC = {v: k for k, v in _KC_TO_HYPR_KEY.items()}
+_MOD_NEST_ORDER = ['Super', 'Ctrl', 'Alt', 'Shift']  # outer -> inner
+
+
+def hypr_key_to_kc(key):
+    if key in _HYPR_KEY_TO_KC:
+        return _HYPR_KEY_TO_KC[key]
+    if len(key) == 1 and key.isalpha():
+        return 'KC_' + key.upper()
+    if len(key) == 1 and key.isdigit():
+        return 'KC_' + key
+    m = re.fullmatch(r'[Ff](\d{1,2})', key)
+    if m:
+        return 'KC_F' + m.group(1)
+    return None
+
+
+def hypr_to_chord(mods, key):
+    """Inverse of chord_to_hypr: (('Shift','Super'), 'P') -> 'LGUI(LSFT(KC_P))'."""
+    kc = hypr_key_to_kc(key)
+    if kc is None:
+        return None
+    ordered = [m for m in _MOD_NEST_ORDER if m in mods]
+    if any(m not in _MOD_NEST_ORDER for m in mods):
+        return None
+    for m in reversed(ordered):
+        kc = '%s(%s)' % (MOD_HYPR_TO_WRAP[m], kc)
+    return kc
+
+
+# ── managed per-key labels (keymap.c header, for keys with no Hyprland bind) ─
+
+LBL_BEGIN = 'moonkeys:labels BEGIN'
+LBL_END = 'moonkeys:labels END'
+_LBL_LINE = re.compile(r'\s*\*\s*(\S.*?)\s*=\s*(.+?)\s*$')
+
+
+def parse_managed_labels(text):
+    """Read the ` * moonkeys:labels BEGIN … END` region -> ({keycode: label}, span)."""
+    b = text.find(LBL_BEGIN)
+    if b == -1:
+        return {}, None
+    e = text.find(LBL_END, b)
+    if e == -1:
+        return {}, None
+    line_start = text.rfind('\n', 0, b) + 1
+    line_end = text.find('\n', e)
+    if line_end == -1:
+        line_end = len(text)
+    labels = {}
+    for raw in text[b:e].splitlines():
+        if LBL_BEGIN in raw:
+            continue
+        m = _LBL_LINE.match(raw)
+        if m:
+            labels[_norm_kc(m.group(1))] = m.group(2).strip()
+    return labels, (line_start, line_end)
+
+
+def _gen_labels_region(labels):
+    lines = [' * ' + LBL_BEGIN + ' — managed by moonkeys, edit via the popup']
+    for kc in sorted(labels):
+        lines.append(' *   %s = %s' % (kc, labels[kc]))
+    lines.append(' * ' + LBL_END)
+    return '\n'.join(lines)
 
 
 # ── serialization ──────────────────────────────────────────────────────────
@@ -237,6 +520,193 @@ def write_keymap(model, kc_edits, hsv_edits, path=None):
         os.fsync(f.fileno())
     os.rename(tmp, path)
     return len(kc_edits) + len(hsv_edits)
+
+
+# ── slot-aware serialization (tap / double / hold + tap-dance regen) ───────
+
+TD_BEGIN = '/* moonkeys:td BEGIN — generated; edit keys via moonkeys */'
+TD_END = '/* moonkeys:td END */'
+
+_MK_TD_HELPER = """typedef enum { MK_NONE, MK_UNKNOWN, MK_TAP, MK_HOLD, MK_DOUBLE } mk_td_state_t;
+static mk_td_state_t mk_cur_dance(tap_dance_state_t *state) {
+  if (state->count == 1) return (state->interrupted || !state->pressed) ? MK_TAP : MK_HOLD;
+  if (state->count == 2) return MK_DOUBLE;
+  return MK_UNKNOWN;
+}"""
+
+_ADV_FN_TMPL = """static mk_td_state_t {name}_state;
+void {name}_finished(tap_dance_state_t *state, void *user_data) {{
+  {name}_state = mk_cur_dance(state);
+  switch ({name}_state) {{
+    case MK_TAP:    register_code16({tap}); break;
+    case MK_HOLD:   {hold_on} break;
+    case MK_DOUBLE: register_code16({double}); break;
+    default: break;
+  }}
+}}
+void {name}_reset(tap_dance_state_t *state, void *user_data) {{
+  switch ({name}_state) {{
+    case MK_TAP:    unregister_code16({tap}); break;
+    case MK_HOLD:   {hold_off} break;
+    case MK_DOUBLE: unregister_code16({double}); break;
+    default: break;
+  }}
+  {name}_state = MK_NONE;
+}}"""
+
+
+def _advanced_td(name, slots):
+    tap = slots.get('tap') or 'KC_NO'
+    double = slots.get('double') or 'KC_NO'
+    hk, hv = slots['hold']
+    if hk == 'layer':
+        hold_on, hold_off = 'layer_on(%s);' % hv, 'layer_off(%s);' % hv
+    else:
+        modkc = MOD_KC[hv]
+        hold_on = 'register_mods(MOD_BIT(%s));' % modkc
+        hold_off = 'unregister_mods(MOD_BIT(%s));' % modkc
+    fn = _ADV_FN_TMPL.format(name=name, tap=tap, double=double,
+                             hold_on=hold_on, hold_off=hold_off)
+    action = ('ACTION_TAP_DANCE_FN_ADVANCED(NULL, %s_finished, %s_reset) /* %s */'
+              % (name, name, _tag_for_slots(slots)))
+    return {'action': action, 'fn': fn}
+
+
+def _slots_to_token(slots, layer, pos, registry):
+    tap = slots.get('tap') or None
+    double = slots.get('double') or None
+    hold = slots.get('hold')
+    if double:
+        name = 'TD_L%d_P%d' % (layer, pos)
+        if hold:
+            registry[name] = _advanced_td(name, slots)
+        else:
+            registry[name] = {
+                'action': 'ACTION_TAP_DANCE_DOUBLE(%s, %s)' % (tap or 'KC_NO', double),
+                'fn': None,
+            }
+        return 'TD(%s)' % name
+    if hold:
+        hk, hv = hold
+        if hk == 'layer':
+            return 'LT(%s, %s)' % (hv, tap) if tap else 'MO(%s)' % hv
+        return '%s(%s)' % (MOD_T_MACRO[hv], tap) if tap else MOD_KC[hv]
+    return tap or 'KC_TRANSPARENT'
+
+
+def _td_region_span(text, arr_span):
+    b = text.find(TD_BEGIN)
+    if b != -1:
+        e = text.find(TD_END, b)
+        if e != -1:
+            return (b, e + len(TD_END))
+    return arr_span
+
+
+def _gen_td_blocks(referenced, existing_actions, registry):
+    if not referenced:
+        enum_text = 'enum tap_dance_codes {\n  TD_UNUSED,\n};'
+        region = (TD_BEGIN + '\ntap_dance_action_t tap_dance_actions[] = {};\n' + TD_END)
+        return enum_text, region
+    enum_text = ('enum tap_dance_codes {\n'
+                 + ',\n'.join('  ' + n for n in referenced) + ',\n};')
+    parts = [TD_BEGIN]
+    advanced = [(n, registry[n]['fn']) for n in referenced
+                if n in registry and registry[n].get('fn')]
+    if advanced:
+        parts.append(_MK_TD_HELPER)
+        parts.extend(fn for _n, fn in advanced)
+    entries = []
+    for n in referenced:
+        if n in registry:
+            act = registry[n]['action']
+        else:
+            act = existing_actions.get(n, 'ACTION_TAP_DANCE_DOUBLE(KC_NO, KC_NO)')
+        entries.append('  [%s] = %s,' % (n, act))
+    parts.append('tap_dance_action_t tap_dance_actions[] = {\n'
+                 + '\n'.join(entries) + '\n};')
+    parts.append(TD_END)
+    return enum_text, '\n'.join(parts)
+
+
+def serialize_full(model, slot_edits, hsv_edits, header_label_edits=None):
+    """Return new keymap.c text with slot + HSV + label edits + regenerated tap dance."""
+    text = model['text']
+    td = model['tapdance']
+    header_label_edits = header_label_edits or {}
+    registry = {}
+    repl = []
+    final_tokens = {}
+    for layer, keys in model['layers'].items():
+        for k in keys:
+            pos = k['idx']
+            if (layer, pos) in slot_edits:
+                tok = _slots_to_token(slot_edits[(layer, pos)], layer, pos, registry)
+                final_tokens[(layer, pos)] = tok
+                if tok != k['keycode']:
+                    repl.append((k['span'][0], k['span'][1], tok))
+            else:
+                final_tokens[(layer, pos)] = k['keycode']
+
+    used = set()
+    for tok in final_tokens.values():
+        used.update(re.findall(r'TD\((\w+)\)', tok))
+    referenced, seen = [], set()
+    for name in td['names'] + sorted(registry):
+        if name in used and name not in seen:
+            seen.add(name)
+            referenced.append(name)
+    for name in used:
+        if name not in seen:
+            seen.add(name)
+            referenced.append(name)
+
+    enum_text, region_text = _gen_td_blocks(referenced, td['actions'], registry)
+
+    for (layer, led), hsv in hsv_edits.items():
+        entry = next(e for e in model['ledmap'][layer] if e['idx'] == led)
+        repl.append((entry['span'][0], entry['span'][1], '{%d,%d,%d}' % tuple(hsv)))
+    if td['enum_span']:
+        repl.append((td['enum_span'][0], td['enum_span'][1], enum_text))
+    region_span = _td_region_span(text, td['arr_span'])
+    if region_span:
+        repl.append((region_span[0], region_span[1], region_text))
+
+    if header_label_edits:
+        labels = dict(model.get('labels', {}))
+        for kc, lbl in header_label_edits.items():
+            nk = _norm_kc(kc)
+            if lbl and lbl.strip():
+                labels[nk] = lbl.strip()
+            else:
+                labels.pop(nk, None)
+        labels_text = _gen_labels_region(labels)
+        span = model.get('labels_span')
+        if span:
+            repl.append((span[0], span[1], labels_text))
+        elif labels:
+            anchor = text.find('Skill for adding')
+            if anchor != -1:
+                ins = text.rfind('\n', 0, anchor) + 1
+                repl.append((ins, ins, labels_text + '\n'))
+
+    repl.sort(key=lambda r: r[0], reverse=True)
+    for s, e, new in repl:
+        text = text[:s] + new + text[e:]
+    return text
+
+
+def write_full(model, slot_edits, hsv_edits, header_label_edits=None, path=None):
+    """Atomically write slot + HSV + label edits (regen tap dance). Returns edit count."""
+    path = path or model['path']
+    new_text = serialize_full(model, slot_edits, hsv_edits, header_label_edits)
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        f.write(new_text)
+        f.flush()
+        os.fsync(f.fileno())
+    os.rename(tmp, path)
+    return len(slot_edits) + len(hsv_edits) + len(header_label_edits or {})
 
 
 # ── display helpers ────────────────────────────────────────────────────────
